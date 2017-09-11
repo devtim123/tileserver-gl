@@ -1,41 +1,45 @@
 'use strict';
 
 var advancedPool = require('advanced-pool'),
-    fs = require('fs'),
-    path = require('path'),
-    util = require('util'),
-    zlib = require('zlib');
+  fs = require('fs'),
+  path = require('path'),
+  util = require('util'),
+  zlib = require('zlib');
 
 // sharp has to be required before node-canvas
 // see https://github.com/lovell/sharp/issues/371
 var sharp = require('sharp');
+//sharp.concurrency(1);
+//sharp.cache(0);
+
+var gm = require('gm');
 
 var Canvas = require('canvas'),
-    clone = require('clone'),
-    Color = require('color'),
-    express = require('express'),
-    mercator = new (require('@mapbox/sphericalmercator'))(),
-    mbgl = require('@mapbox/mapbox-gl-native'),
-    mbtiles = require('@mapbox/mbtiles'),
-    pngquant = require('node-pngquant-native'),
-    proj4 = require('proj4'),
-    request = require('request');
+  clone = require('clone'),
+  Color = require('color'),
+  express = require('express'),
+  mercator = new (require('@mapbox/sphericalmercator'))(),
+  mbgl = require('@mapbox/mapbox-gl-native'),
+  mbtiles = require('@mapbox/mbtiles'),
+  pngquant = require('node-pngquant-native'),
+  proj4 = require('proj4'),
+  request = require('request');
 
 var utils = require('./utils');
 
 var FLOAT_PATTERN = '[+-]?(?:\\d+|\\d+\.?\\d+)';
 
-var getScale = function(scale) {
+var getScale = function (scale) {
   return (scale || '@1x').slice(1, 2) | 0;
 };
 
-mbgl.on('message', function(e) {
+mbgl.on('message', function (e) {
   if (e.severity == 'WARNING' || e.severity == 'ERROR') {
     console.log('mbgl:', e);
   }
 });
 
-module.exports = function(options, repo, params, id, dataResolver) {
+module.exports = function (options, repo, params, id, dataResolver) {
   var app = express().disable('x-powered-by');
 
   var maxScaleFactor = Math.min(Math.floor(options.maxScaleFactor || 3), 9);
@@ -58,10 +62,10 @@ module.exports = function(options, repo, params, id, dataResolver) {
   };
 
   var existingFonts = {};
-  var fontListingPromise = new Promise(function(resolve, reject) {
-    fs.readdir(options.paths.fonts, function(err, files) {
-      files.forEach(function(file) {
-        fs.stat(path.join(options.paths.fonts, file), function(err, stats) {
+  var fontListingPromise = new Promise(function (resolve, reject) {
+    fs.readdir(options.paths.fonts, function (err, files) {
+      files.forEach(function (file) {
+        fs.stat(path.join(options.paths.fonts, file), function (err, stats) {
           if (!err) {
             if (stats.isDirectory()) {
               existingFonts[path.basename(file)] = true;
@@ -74,18 +78,18 @@ module.exports = function(options, repo, params, id, dataResolver) {
   });
 
   var styleJSON;
-  var createPool = function(ratio, min, max) {
-    var createRenderer = function(ratio, createCallback) {
+  var createPool = function (ratio, min, max) {
+    var createRenderer = function (ratio, createCallback) {
       var renderer = new mbgl.Map({
         ratio: ratio,
-        request: function(req, callback) {
+        request: function (req, callback) {
           var protocol = req.url.split(':')[0];
           //console.log('Handling request:', req);
           if (protocol == 'sprites') {
             var dir = options.paths[protocol];
             var file = unescape(req.url).substring(protocol.length + 3);
-            fs.readFile(path.join(dir, file), function(err, data) {
-              callback(err, { data: data });
+            fs.readFile(path.join(dir, file), function (err, data) {
+              callback(err, {data: data});
             });
           } else if (protocol == 'fonts') {
             var parts = req.url.split('/');
@@ -93,9 +97,9 @@ module.exports = function(options, repo, params, id, dataResolver) {
             var range = parts[3].split('.')[0];
             utils.getFontsPbf(
               null, options.paths[protocol], fontstack, range, existingFonts
-            ).then(function(concated) {
+            ).then(function (concated) {
               callback(null, {data: concated});
-            }, function(err) {
+            }, function (err) {
               callback(err, {data: null});
             });
           } else if (protocol == 'mbtiles') {
@@ -103,13 +107,13 @@ module.exports = function(options, repo, params, id, dataResolver) {
             var sourceId = parts[2];
             var source = map.sources[sourceId];
             var z = parts[3] | 0,
-                x = parts[4] | 0,
-                y = parts[5].split('.')[0] | 0,
-                format = parts[5].split('.')[1];
-            source.getTile(z, x, y, function(err, data, headers) {
+              x = parts[4] | 0,
+              y = parts[5].split('.')[0] | 0,
+              format = parts[5].split('.')[1];
+            source.getTile(z, x, y, function (err, data, headers) {
               if (err) {
                 //console.log('MBTiles error, serving empty', err);
-                callback(null, { data: source.emptyTile });
+                callback(null, {data: source.emptyTile});
               } else {
                 var response = {};
 
@@ -132,45 +136,45 @@ module.exports = function(options, repo, params, id, dataResolver) {
             });
           } else if (protocol == 'http' || protocol == 'https') {
             request({
-                url: req.url,
-                encoding: null,
-                gzip: true
-            }, function(err, res, body) {
-                if (err) {
-                  //console.log('HTTP tile error', err);
-                  callback(null, { data: new Buffer(0) });
-                } else if (res.statusCode == 200) {
-                  var response = {};
+              url: req.url,
+              encoding: null,
+              gzip: true
+            }, function (err, res, body) {
+              if (err) {
+                //console.log('HTTP tile error', err);
+                callback(null, {data: new Buffer(0)});
+              } else if (res.statusCode == 200) {
+                var response = {};
 
-                  if (res.headers.modified) {
-                    response.modified = new Date(res.headers.modified);
-                  }
-                  if (res.headers.expires) {
-                    response.expires = new Date(res.headers.expires);
-                  }
-                  if (res.headers.etag) {
-                    response.etag = res.headers.etag;
-                  }
-
-                  response.data = body;
-
-                  callback(null, response);
-                } else {
-                  //console.log('HTTP error', JSON.parse(body).message);
-                  callback(null, { data: new Buffer(0) });
+                if (res.headers.modified) {
+                  response.modified = new Date(res.headers.modified);
                 }
+                if (res.headers.expires) {
+                  response.expires = new Date(res.headers.expires);
+                }
+                if (res.headers.etag) {
+                  response.etag = res.headers.etag;
+                }
+
+                response.data = body;
+
+                callback(null, response);
+              } else {
+                //console.log('HTTP error', JSON.parse(body).message);
+                callback(null, {data: new Buffer(0)});
+              }
             });
           }
         }
       });
-      renderer.load(styleJSON);
+      //renderer.load(styleJSON);
       createCallback(null, renderer);
     };
     return new advancedPool.Pool({
       min: min,
       max: max,
       create: createRenderer.bind(null, ratio),
-      destroy: function(renderer) {
+      destroy: function (renderer) {
         renderer.release();
       }
     });
@@ -182,9 +186,9 @@ module.exports = function(options, repo, params, id, dataResolver) {
   var httpTester = /^(http(s)?:)?\/\//;
   if (styleJSON.sprite && !httpTester.test(styleJSON.sprite)) {
     styleJSON.sprite = 'sprites://' +
-        styleJSON.sprite
-            .replace('{style}', path.basename(styleFile, '.json'))
-            .replace('{styleJsonFolder}', path.relative(options.paths.sprites, path.dirname(styleJSONPath)));
+      styleJSON.sprite
+        .replace('{style}', path.basename(styleFile, '.json'))
+        .replace('{styleJsonFolder}', path.relative(options.paths.sprites, path.dirname(styleJSONPath)));
   }
   if (styleJSON.glyphs && !httpTester.test(styleJSON.glyphs)) {
     styleJSON.glyphs = 'fonts://' + styleJSON.glyphs;
@@ -208,7 +212,7 @@ module.exports = function(options, repo, params, id, dataResolver) {
   var dataProjWGStoInternalWGS = null;
 
   var queue = [];
-  Object.keys(styleJSON.sources).forEach(function(name) {
+  Object.keys(styleJSON.sources).forEach(function (name) {
     var source = styleJSON.sources[name];
     var url = source.url;
 
@@ -218,7 +222,7 @@ module.exports = function(options, repo, params, id, dataResolver) {
 
       var mbtilesFile = url.substring('mbtiles://'.length);
       var fromData = mbtilesFile[0] == '{' &&
-                     mbtilesFile[mbtilesFile.length - 1] == '}';
+        mbtilesFile[mbtilesFile.length - 1] == '}';
 
       if (fromData) {
         mbtilesFile = mbtilesFile.substr(1, mbtilesFile.length - 2);
@@ -233,14 +237,14 @@ module.exports = function(options, repo, params, id, dataResolver) {
         }
       }
 
-      queue.push(new Promise(function(resolve, reject) {
+      queue.push(new Promise(function (resolve, reject) {
         mbtilesFile = path.resolve(options.paths.mbtiles, mbtilesFile);
         var mbtilesFileStats = fs.statSync(mbtilesFile);
         if (!mbtilesFileStats.isFile() || mbtilesFileStats.size == 0) {
           throw Error('Not valid MBTiles file: ' + mbtilesFile);
         }
-        map.sources[name] = new mbtiles(mbtilesFile, function(err) {
-          map.sources[name].getInfo(function(err, info) {
+        map.sources[name] = new mbtiles(mbtilesFile, function (err) {
+          map.sources[name].getInfo(function (err, info) {
             if (err) {
               console.error(err);
               return;
@@ -250,7 +254,7 @@ module.exports = function(options, repo, params, id, dataResolver) {
               // how to do this for multiple sources with different proj4 defs?
               var to3857 = proj4('EPSG:3857');
               var toDataProj = proj4(info.proj4);
-              dataProjWGStoInternalWGS = function(xy) {
+              dataProjWGStoInternalWGS = function (xy) {
                 return to3857.inverse(toDataProj.forward(xy));
               };
             }
@@ -284,12 +288,12 @@ module.exports = function(options, repo, params, id, dataResolver) {
                   height: 1,
                   channels: channels
                 }
-              }).toFormat(format).toBuffer(function(err, buffer, info) {
+              }).toFormat(format).toBuffer(function (err, buffer, info) {
                 map.sources[name].emptyTile = buffer;
               });
             }
             if (!attributionOverride &&
-                source.attribution && source.attribution.length > 0) {
+              source.attribution && source.attribution.length > 0) {
               if (tileJSON.attribution.length > 0) {
                 tileJSON.attribution += '; ';
               }
@@ -302,7 +306,7 @@ module.exports = function(options, repo, params, id, dataResolver) {
     }
   });
 
-  var renderersReadyPromise = Promise.all(queue).then(function() {
+  var renderersReadyPromise = Promise.all(queue).then(function () {
     // TODO: make pool sizes configurable
     for (var s = 1; s <= maxScaleFactor; s++) {
       var minPoolSize = 2;
@@ -321,18 +325,18 @@ module.exports = function(options, repo, params, id, dataResolver) {
   repo[id] = tileJSON;
 
   var tilePattern = '/' + id + '/:z(\\d+)/:x(\\d+)/:y(\\d+)' +
-                    ':scale(' + scalePattern + ')?\.:format([\\w]+)';
+    ':scale(' + scalePattern + ')?\.:format([\\w]+)';
 
-  var respondImage = function(z, lon, lat, bearing, pitch,
-                              width, height, scale, format, res, next,
-                              opt_overlay) {
+  var respondImage = function (req, z, lon, lat, bearing, pitch,
+                               width, height, scale, format, res, next,
+                               opt_overlay) {
     if (Math.abs(lon) > 180 || Math.abs(lat) > 85.06 ||
-        lon != lon || lat != lat) {
+      lon != lon || lat != lat) {
       return res.status(400).send('Invalid center');
     }
     if (Math.min(width, height) <= 0 ||
-        Math.max(width, height) * scale > (options.maxSize || 2048) ||
-        width != width || height != height) {
+      Math.max(width, height) * scale > (options.maxSize || 2048) ||
+      width != width || height != height) {
       return res.status(400).send('Invalid size');
     }
     if (format == 'png' || format == 'webp') {
@@ -343,7 +347,7 @@ module.exports = function(options, repo, params, id, dataResolver) {
     }
 
     var pool = map.renderers[scale];
-    pool.acquire(function(err, renderer) {
+    pool.acquire(function (err, renderer) {
       var mbglZ = Math.max(0, z - 1);
       var params = {
         zoom: mbglZ,
@@ -357,12 +361,195 @@ module.exports = function(options, repo, params, id, dataResolver) {
         params.width *= 2;
         params.height *= 2;
       }
-      renderer.render(params, function(err, data) {
+
+      renderer.load(styleJSON);
+
+    });
+  };
+
+  var respondExtraLargeImage = function (req, bbox, w, h, scale, format,
+                                         res) {
+
+    if (format == 'png' || format == 'webp') {
+    } else if (format == 'jpg' || format == 'jpeg') {
+      format = 'jpeg';
+    } else {
+      return res.status(400).send('Invalid format');
+    }
+
+    var pool = map.renderers[scale];
+    pool.acquire(function (err, renderer) {
+
+      //custom colors
+      if (id === "tripleflow" && req.query.c1 && req.query.c2 && req.query.c3) {
+        styleJSON.layers.forEach((layer) => {
+          if (layer.id == "background"
+          ) {
+            layer.paint = {
+              "background-opacity": 1,
+              "background-color": "#" + req.query.c1
+            }
+          }
+          if (layer.id == "building") {
+            layer.paint = {
+              "fill-color": "#" + req.query.c2,
+              "fill-outline-color": "#" + req.query.c1,
+              "fill-opacity": 0
+            }
+          }
+
+          if (layer.id === 'bridge_minor case' || layer.id === 'bridge_major case') {
+            layer.paint['line-color'] = "#" + req.query.c1;
+          }
+
+          const roadArray = [
+            'tunnel_minor',
+            'tunnel_major',
+            'road_minor',
+            'road_major',
+            'road',
+            'bridge_major',
+            'bridge_minor',
+            'landuse_pitch',
+            'road_minor_street',
+            'road_minor_service',
+            'road_motorway',
+            'road_minor',
+            'aeroway',
+            'minor_rail',
+            'major_rail',
+          ];
+
+          if (roadArray.indexOf(layer.id) >= 0) {
+            layer.paint["line-color"] = "#" + req.query.c2;
+          }
+          if (layer.id == "waterway") {
+            layer.paint["line-color"] = "#" + req.query.c3;
+          }
+          if (layer.id == "water") {
+            layer.paint["fill-color"] = "#" + req.query.c3;
+          }
+        });
+      }
+      if (id === "rainbowflow") {
+
+      }
+      renderer.load(styleJSON);
+
+      const options = {
+        raw: {
+          width: w * scale,
+          height: h * scale,
+          channels: 4
+        }
+      };
+
+      var background = sharp({
+        create: {
+          width: w * scale,
+          height: h * scale,
+          channels: 4,
+          background: "black"
+        }
+      }).raw().toBuffer();
+
+      console.log("bbox: ", bbox);
+
+      gm(background, 'test.' + format).background('white')
+        .setFormat(format)
+        .toBuffer(function (err, bufferd) {
+          if (err) {
+            throw err;
+          } else {
+            res.set({
+              'Last-Modified': lastModified,
+              'Content-Type': 'image/' + format
+            });
+            return res.status(200).send(bufferd);
+          }
+        });
+
+      //rendererRender(pool, renderer, background, bbox, w, h, scale, format).then((buffer) => {
+      //
+      //
+      //  sharp(buffer, options).toFormat(format).toBuffer(function (err, data, info) {
+      //
+      //    gm(data, 'test.' + format).background('white')
+      //      .setFormat(format)
+      //      .toBuffer(function (err, bufferd) {
+      //        if (err) {
+      //          throw err;
+      //        } else {
+      //          res.set({
+      //            'Last-Modified': lastModified,
+      //            'Content-Type': 'image/' + format
+      //          });
+      //          return res.status(200).send(bufferd);
+      //        }
+      //      });
+      //
+      //  });
+      //});
+    });
+  };
+
+  var gmToBuffer = function (data) {
+    return new Promise((resolve, reject) => {
+      data.stream((err, stdout, stderr) => {
+        if (err) {
+          return reject(err)
+        }
+        const chunks = []
+        stdout.on('data', (chunk) => {
+          chunks.push(chunk)
+        })
+        // these are 'once' because they can and do fire multiple times for multiple errors,
+        // but this is a promise so you'll have to deal with them one at a time
+        stdout.once('end', () => {
+          resolve(Buffer.concat(chunks))
+        })
+        stderr.once('data', (data) => {
+          reject(String(data))
+        })
+      })
+    })
+  };
+
+  var rendererRender = function (pool, renderer, input, bbox, w, h, scale, format, count) {
+    const parts = 10;
+    count = count || 0;
+    return new Promise(function (resolve, reject) {
+
+      var zBase = 25;
+      var minCorner = mercator.px([bbox[0], bbox[3]], zBase), //minx + maxy (w + n)
+        maxCorner = mercator.px([bbox[2], bbox[1]], zBase); //maxx + miny (e + s)
+
+      var vertDiffPixel = (maxCorner[1] - minCorner[1]) * (1 / parts);
+      var bboxPartPixel = [minCorner[0], (maxCorner[1] - vertDiffPixel * count), maxCorner[0], (maxCorner[1] - vertDiffPixel * (count + 1))];
+      var ne = mercator.ll([bboxPartPixel[2], bboxPartPixel[3]], zBase);
+      var sw = mercator.ll([bboxPartPixel[0], bboxPartPixel[1]], zBase);
+      var bboxPart = [sw[0], sw[1], ne[0], ne[1]];
+      var center = [(bboxPart[0] + bboxPart[2]) / 2, (bboxPart[1] + bboxPart[3]) / 2];
+      var z = calcZForBBox(bboxPart, w, (h / parts), {padding: 0});
+      var mbglZ = Math.max(0, z - 1);
+      var params = {
+        zoom: mbglZ,
+        center: center,
+        width: w,
+        height: parseInt(h / parts, 10),
+      };
+      if (z == 0) {
+        params.width *= 2;
+        params.height *= 2;
+      }
+      renderer.render(params, function (err, data) {
         pool.release(renderer);
         if (err) {
           console.error(err);
           return;
         }
+
+        console.log("params: ", params);
 
         var image = sharp(data, {
           raw: {
@@ -377,59 +564,55 @@ module.exports = function(options, repo, params, id, dataResolver) {
           image.resize(width * scale, height * scale);
         }
 
-        if (opt_overlay) {
-          image.overlayWith(opt_overlay);
-        }
-        if (watermark) {
-          var canvas = new Canvas(scale * width, scale * height);
-          var ctx = canvas.getContext('2d');
-          ctx.scale(scale, scale);
-          ctx.font = '10px sans-serif';
-          ctx.strokeWidth = '1px';
-          ctx.strokeStyle = 'rgba(255,255,255,.4)';
-          ctx.strokeText(watermark, 5, height - 5);
-          ctx.fillStyle = 'rgba(0,0,0,.4)';
-          ctx.fillText(watermark, 5, height - 5);
-
-          image.overlayWith(canvas.toBuffer());
-        }
-
         var formatQuality = (params.formatQuality || {})[format] ||
-                            (options.formatQuality || {})[format];
+          (options.formatQuality || {})[format];
 
         if (format == 'png') {
           image.png({adaptiveFiltering: false});
         } else if (format == 'jpeg') {
-          image.jpeg({quality: formatQuality || 80});
+          image.jpeg({quality: formatQuality || 100});
         } else if (format == 'webp') {
-          image.webp({quality: formatQuality || 90});
+          image.webp({quality: formatQuality || 100});
         }
-        image.toBuffer(function(err, buffer, info) {
-          if (!buffer) {
-            return res.status(404).send('Not found');
-          }
-
-          if (format == 'png') {
-            var usePngQuant =
-                (options.formatQuality || {}).pngQuantization === true;
-            if (usePngQuant) {
-              buffer = pngquant.compress(buffer, {
-                quality: [0, formatQuality || 90]
-              });
+        let imageBuffer = input.then((data) => {
+          return image.toBuffer().then((buffer) => {
+            if (!buffer) {
+              return null;
             }
-          }
 
-          res.set({
-            'Last-Modified': lastModified,
-            'Content-Type': 'image/' + format
+            if (format == 'png') {
+              var usePngQuant =
+                (options.formatQuality || {}).pngQuantization === true;
+              if (usePngQuant) {
+                buffer = pngquant.compress(buffer, {
+                  quality: [0, formatQuality || 100]
+                });
+              }
+            }
+
+            let newImg = sharp(data, {
+              raw: {
+                width: w * scale,
+                height: h * scale,
+                channels: 4
+              }
+            }).overlayWith(buffer, {left: 0, top: params.height * (parts - (count + 1))}).raw().toBuffer();
+
+            if ((count + 1) < parts) {
+              return rendererRender(pool, renderer, newImg, bbox, w, h, scale, format, count + 1)
+            }
+            else {
+              return newImg;
+            }
+
           });
-          return res.status(200).send(buffer);
         });
+        resolve(imageBuffer);
       });
     });
   };
 
-  app.get(tilePattern, function(req, res, next) {
+  app.get(tilePattern, function (req, res, next) {
     var modifiedSince = req.get('if-modified-since'), cc = req.get('cache-control');
     if (modifiedSince && (!cc || cc.indexOf('no-cache') == -1)) {
       if (new Date(lastModified) <= new Date(modifiedSince)) {
@@ -438,12 +621,12 @@ module.exports = function(options, repo, params, id, dataResolver) {
     }
 
     var z = req.params.z | 0,
-        x = req.params.x | 0,
-        y = req.params.y | 0,
-        scale = getScale(req.params.scale),
-        format = req.params.format;
+      x = req.params.x | 0,
+      y = req.params.y | 0,
+      scale = getScale(req.params.scale),
+      format = req.params.format;
     if (z < 0 || x < 0 || y < 0 ||
-        z > 20 || x >= Math.pow(2, z) || y >= Math.pow(2, z)) {
+      z > 20 || x >= Math.pow(2, z) || y >= Math.pow(2, z)) {
       return res.status(404).send('Out of bounds');
     }
     var tileSize = 256;
@@ -451,14 +634,14 @@ module.exports = function(options, repo, params, id, dataResolver) {
       ((x + 0.5) / (1 << z)) * (256 << z),
       ((y + 0.5) / (1 << z)) * (256 << z)
     ], z);
-    return respondImage(z, tileCenter[0], tileCenter[1], 0, 0,
-                        tileSize, tileSize, scale, format, res, next);
+    return respondImage(req, z, tileCenter[0], tileCenter[1], 0, 0,
+      tileSize, tileSize, scale, format, res, next);
   });
 
-  var extractPathFromQuery = function(query, transformer) {
+  var extractPathFromQuery = function (query, transformer) {
     var pathParts = (query.path || '').split('|');
     var path = [];
-    pathParts.forEach(function(pair) {
+    pathParts.forEach(function (pair) {
       var pairParts = pair.split(',');
       if (pairParts.length == 2) {
         var pair;
@@ -476,12 +659,12 @@ module.exports = function(options, repo, params, id, dataResolver) {
     return path;
   };
 
-  var renderOverlay = function(z, x, y, bearing, pitch, w, h, scale,
-                               path, query) {
+  var renderOverlay = function (z, x, y, bearing, pitch, w, h, scale,
+                                path, query) {
     if (!path || path.length < 2) {
       return null;
     }
-    var precisePx = function(ll, zoom) {
+    var precisePx = function (ll, zoom) {
       var px = mercator.px(ll, 20);
       var scale = Math.pow(2, zoom - 20);
       return [px[0] * scale, px[1] * scale];
@@ -510,17 +693,17 @@ module.exports = function(options, repo, params, id, dataResolver) {
       ctx.translate(-center[0] + w / 2, -center[1] + h / 2);
     }
     var lineWidth = query.width !== undefined ?
-                    parseFloat(query.width) : 1;
+      parseFloat(query.width) : 1;
     ctx.lineWidth = lineWidth;
     ctx.strokeStyle = query.stroke || 'rgba(0,64,255,0.7)';
     ctx.fillStyle = query.fill || 'rgba(255,255,255,0.4)';
     ctx.beginPath();
-    path.forEach(function(pair) {
+    path.forEach(function (pair) {
       var px = precisePx(pair, z);
       ctx.lineTo(px[0], px[1]);
     });
     if (path[0][0] == path[path.length - 1][0] &&
-        path[0][1] == path[path.length - 1][1]) {
+      path[0][1] == path[path.length - 1][1]) {
       ctx.closePath();
     }
     ctx.fill();
@@ -531,48 +714,55 @@ module.exports = function(options, repo, params, id, dataResolver) {
     return canvas.toBuffer();
   };
 
-  var calcZForBBox = function(bbox, w, h, query) {
+  var calcZForBBox = function (bbox, w, h, query) {
     var z = 25;
 
     var padding = query.padding !== undefined ?
-                  parseFloat(query.padding) : 0.1;
+      parseFloat(query.padding) : 0.1;
 
-    var minCorner = mercator.px([bbox[0], bbox[3]], z),
-        maxCorner = mercator.px([bbox[2], bbox[1]], z);
-    var w_ = w / (1 + 2 * padding);
-    var h_ = h / (1 + 2 * padding);
+    var minCorner = mercator.px([bbox[0], bbox[3]], z), //minx + maxy (w + n)
+      maxCorner = mercator.px([bbox[2], bbox[1]], z); //maxx + miny (e + s)
+
+    console.log("minCorner: ", minCorner);
+    console.log("maxCorner: ", maxCorner);
 
     z -= Math.max(
-      Math.log((maxCorner[0] - minCorner[0]) / w_),
-      Math.log((maxCorner[1] - minCorner[1]) / h_)
-    ) / Math.LN2;
+        Math.log((maxCorner[0] - minCorner[0]) / w),
+        Math.log((maxCorner[1] - minCorner[1]) / h)
+      ) / Math.LN2;
 
-    z = Math.max(Math.log(Math.max(w, h) / 256) / Math.LN2, Math.min(25, z));
+    // z = z
+
+    //z = Math.max(Math.log(Math.max(w, h) / 256) / Math.LN2, Math.min(25, z));
+
+    //z = Math.round(z * 100) / 100;
+
+    console.log("ZOOM: ", z);
 
     return z;
   };
 
   if (options.serveStaticMaps !== false) {
     var staticPattern =
-        '/' + id + '/static/:raw(raw)?/%s/:width(\\d+)x:height(\\d+)' +
-        ':scale(' + scalePattern + ')?\.:format([\\w]+)';
+      '/' + id + '/static/:raw(raw)?/%s/:width(\\d+)x:height(\\d+)' +
+      ':scale(' + scalePattern + ')?\.:format([\\w]+)';
 
     var centerPattern =
-        util.format(':x(%s),:y(%s),:z(%s)(@:bearing(%s)(,:pitch(%s))?)?',
-                    FLOAT_PATTERN, FLOAT_PATTERN, FLOAT_PATTERN,
-                    FLOAT_PATTERN, FLOAT_PATTERN);
+      util.format(':x(%s),:y(%s),:z(%s)(@:bearing(%s)(,:pitch(%s))?)?',
+        FLOAT_PATTERN, FLOAT_PATTERN, FLOAT_PATTERN,
+        FLOAT_PATTERN, FLOAT_PATTERN);
 
-    app.get(util.format(staticPattern, centerPattern), function(req, res, next) {
+    app.get(util.format(staticPattern, centerPattern), function (req, res, next) {
       var raw = req.params.raw;
       var z = +req.params.z,
-          x = +req.params.x,
-          y = +req.params.y,
-          bearing = +(req.params.bearing || '0'),
-          pitch = +(req.params.pitch || '0'),
-          w = req.params.width | 0,
-          h = req.params.height | 0,
-          scale = getScale(req.params.scale),
-          format = req.params.format;
+        x = +req.params.x,
+        y = +req.params.y,
+        bearing = +(req.params.bearing || '0'),
+        pitch = +(req.params.pitch || '0'),
+        w = req.params.width | 0,
+        h = req.params.height | 0,
+        scale = getScale(req.params.scale),
+        format = req.params.format;
 
       if (z < 0) {
         return res.status(404).send('Invalid zoom');
@@ -589,16 +779,17 @@ module.exports = function(options, repo, params, id, dataResolver) {
 
       var path = extractPathFromQuery(req.query, transformer);
       var overlay = renderOverlay(z, x, y, bearing, pitch, w, h, scale,
-                                  path, req.query);
+        path, req.query);
 
-      return respondImage(z, x, y, bearing, pitch, w, h, scale, format,
-                          res, next, overlay);
+      return respondImage(req, z, x, y, bearing, pitch, w, h, scale, format,
+        res, next, overlay);
     });
 
-    var serveBounds = function(req, res, next) {
+    var serveBounds = function (req, res, next) {
+      console.log("serveBounds");
       var raw = req.params.raw;
       var bbox = [+req.params.minx, +req.params.miny,
-                  +req.params.maxx, +req.params.maxy];
+        +req.params.maxx, +req.params.maxy];
       var center = [(bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2];
 
       var transformer = raw ?
@@ -615,30 +806,44 @@ module.exports = function(options, repo, params, id, dataResolver) {
       }
 
       var w = req.params.width | 0,
-          h = req.params.height | 0,
-          scale = getScale(req.params.scale),
-          format = req.params.format;
+        h = req.params.height | 0,
+        scale = getScale(req.params.scale),
+        format = req.params.format;
 
       var z = calcZForBBox(bbox, w, h, req.query),
-          x = center[0],
-          y = center[1],
-          bearing = 0,
-          pitch = 0;
+        x = center[0],
+        y = center[1],
+        bearing = 0,
+        pitch = 0;
 
       var path = extractPathFromQuery(req.query, transformer);
       var overlay = renderOverlay(z, x, y, bearing, pitch, w, h, scale,
-                                  path, req.query);
-      return respondImage(z, x, y, bearing, pitch, w, h, scale, format,
-                          res, next, overlay);
+        path, req.query);
+      return respondImage(req, z, x, y, bearing, pitch, w, h, scale, format,
+        res, next, overlay);
+    };
+
+    var serveExtraLargeBounds = function (req, res, next) {
+
+      var bbox = [+req.params.minx, +req.params.miny,
+        +req.params.maxx, +req.params.maxy];
+
+      var w = req.params.width | 0,
+        h = req.params.height | 0,
+        scale = getScale(req.params.scale),
+        format = req.params.format;
+
+      return respondExtraLargeImage(req, bbox, w, h, scale, format,
+        res);
     };
 
     var boundsPattern =
-        util.format(':minx(%s),:miny(%s),:maxx(%s),:maxy(%s)',
-                    FLOAT_PATTERN, FLOAT_PATTERN, FLOAT_PATTERN, FLOAT_PATTERN);
+      util.format(':minx(%s),:miny(%s),:maxx(%s),:maxy(%s)',
+        FLOAT_PATTERN, FLOAT_PATTERN, FLOAT_PATTERN, FLOAT_PATTERN);
 
-    app.get(util.format(staticPattern, boundsPattern), serveBounds);
+    app.get(util.format(staticPattern, boundsPattern), serveExtraLargeBounds);
 
-    app.get('/' + id + '/static/', function(req, res, next) {
+    app.get('/' + id + '/static/', function (req, res, next) {
       for (var key in req.query) {
         req.query[key.toLowerCase()] = req.query[key];
       }
@@ -656,20 +861,19 @@ module.exports = function(options, repo, params, id, dataResolver) {
         req.params.height /= req.query.scale;
         req.params.scale = '@' + req.query.scale;
       }
-
       return serveBounds(req, res, next);
     });
 
     var autoPattern = 'auto';
 
-    app.get(util.format(staticPattern, autoPattern), function(req, res, next) {
+    app.get(util.format(staticPattern, autoPattern), function (req, res, next) {
       var raw = req.params.raw;
       var w = req.params.width | 0,
-          h = req.params.height | 0,
-          bearing = 0,
-          pitch = 0,
-          scale = getScale(req.params.scale),
-          format = req.params.format;
+        h = req.params.height | 0,
+        bearing = 0,
+        pitch = 0,
+        scale = getScale(req.params.scale),
+        format = req.params.format;
 
       var transformer = raw ?
         mercator.inverse.bind(mercator) : dataProjWGStoInternalWGS;
@@ -680,7 +884,7 @@ module.exports = function(options, repo, params, id, dataResolver) {
       }
 
       var bbox = [Infinity, Infinity, -Infinity, -Infinity];
-      path.forEach(function(pair) {
+      path.forEach(function (pair) {
         bbox[0] = Math.min(bbox[0], pair[0]);
         bbox[1] = Math.min(bbox[1], pair[1]);
         bbox[2] = Math.max(bbox[2], pair[0]);
@@ -693,26 +897,26 @@ module.exports = function(options, repo, params, id, dataResolver) {
       );
 
       var z = calcZForBBox(bbox, w, h, req.query),
-          x = center[0],
-          y = center[1];
+        x = center[0],
+        y = center[1];
 
       var overlay = renderOverlay(z, x, y, bearing, pitch, w, h, scale,
-                                  path, req.query);
+        path, req.query);
 
-      return respondImage(z, x, y, bearing, pitch, w, h, scale, format,
-                          res, next, overlay);
+      return respondImage(req, z, x, y, bearing, pitch, w, h, scale, format,
+        res, next, overlay);
     });
   }
 
-  app.get('/' + id + '.json', function(req, res, next) {
+  app.get('/' + id + '.json', function (req, res, next) {
     var info = clone(tileJSON);
     info.tiles = utils.getTileUrls(req, info.tiles,
-                                   'styles/' + id, info.format);
+      'styles/' + id, info.format);
     return res.send(info);
   });
 
-  return new Promise(function(resolve, reject) {
-    Promise.all([fontListingPromise, renderersReadyPromise]).then(function() {
+  return new Promise(function (resolve, reject) {
+    Promise.all([fontListingPromise, renderersReadyPromise]).then(function () {
       resolve(app);
     });
   });

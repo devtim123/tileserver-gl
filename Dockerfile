@@ -20,6 +20,7 @@ RUN apt-get -qq update \
 && apt-get -qq update \
 && DEBIAN_FRONTEND=noninteractive apt-get -y --allow-unauthenticated install \
     nodejs \
+&& DEBIAN_FRONTEND=noninteractive apt-get install --no-install-recommends -y graphicsmagick graphicsmagick-imagemagick-compat \
 && rm /etc/apt/sources.list.d/nodejs.list \
 && apt-get clean
 
